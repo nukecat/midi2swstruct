@@ -1,11 +1,22 @@
-use midly::{Fps, MetaMessage, Timing};
+#![feature(adt_const_params)]
+#![feature(generic_const_exprs)]
+
+pub mod optionarray;
+pub mod timebytesequence;
+pub mod sequence;
+
 use sw_structure_io::structs::*;
 use sw_structure_io::io::WriteBuilding;
 use clap::Parser;
-use std::fmt::format;
 use std::fs::File;
 use std::io::{self, Write};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use crate::timebytesequence::*;
+
+type StateUnit = u16;
+
+const CHUNKS_COUNT: usize = 128usize / StateUnit::BITS as usize;
+const CHUNK_SIZE: usize = StateUnit::BITS as usize;
 
 #[derive(Parser, Debug)]
 #[command(name = "midi2swstruct")]
@@ -34,10 +45,6 @@ struct Args {
     #[arg(short, long, default_value = "0")]
     structure_version: u8,
 
-    /// Chunk size (amount of note rows per chunk).
-    #[arg(short, long, default_value = "16")]
-    chunk_size: u8,
-
     /// Maximal amount of events per function.
     #[arg(long, default_value = "2048")]
     max_events_per_func: usize,
@@ -60,133 +67,79 @@ fn open_output(dest: &str) -> io::Result<Box<dyn Write>> {
 }
 
 #[derive(Debug, Clone)]
-struct NotesPackedState {
-    time: u64,
-    state: usize
-}
-
-#[derive(Debug, Clone)]
 struct TempoState {
-    time: u64,
+    time: usize,
     state: u32
 }
 
 #[derive(Debug, Clone)]
-struct Track {
-    note_states: Vec<Vec<NotesPackedState>>,
-    tempo_changes: Vec<TempoState>,
-    length: u64,
-    timing: midly::Timing
+enum Timing {
+    Metrical {
+        tpq: usize,
+        tempo: Vec<TempoState>
+    },
+    Timecode {
+        tps: usize
+    }
 }
 
-fn read_midi_filtered_packed(
-    data: &[u8],
-    min_note: u8,
-    max_note: u8,
-    min_vel: u8,
-    chunk_size: u8,
-) -> Result<Track, Box<dyn std::error::Error>> {
-    use midly::{Smf, TrackEventKind, MidiMessage, MetaMessage};
+trait GetSequenceTiming {
+    fn get_sequence_timing(&self) -> TimeByteMultiSequence<>
+}
 
-    let smf = Smf::parse(&data)?;
+trait IntoTimeByteMultiSequence {
+    fn into_time_byte_multi_sequence(&self, min_vel: u8) -> TimeByteMultiSequence<16>;
+}
 
-    // inclusive range length and ceil division for chunks
-    let range_len = (max_note as isize - min_note as isize + 1).max(0) as usize;
-    let num_chunks = if range_len == 0 { 0 } else { (range_len + chunk_size as usize - 1) / chunk_size as usize };
+impl<'a> IntoTimeByteMultiSequence for midly::Smf<'a> {
+    fn into_time_byte_multi_sequence(&self, min_vel: u8) -> TimeByteMultiSequence<16> {
+        use midly::{TrackEventKind, MidiMessage};
+        use std::array::from_fn;
 
-    let mut tempo_changes: Vec<TempoState> = vec![TempoState { time: 0, state: 500_000u32 }];
-    let mut track_chunks: Vec<Vec<NotesPackedState>> = vec![Vec::new(); num_chunks];
-    let mut last_state: Vec<usize> = vec![0; num_chunks];
+        let mut merged_multi_sequence = TimeByteMultiSequence::<16>::new();
 
-    // collect owned kinds with absolute times
-    let mut events: Vec<(u64, TrackEventKind)> = Vec::new();
-    for track in &smf.tracks {
-        let mut abs: u64 = 0;
-        for ev in track {
-            abs = abs.saturating_add(ev.delta.as_int() as u64);
-            events.push((abs, ev.kind.clone()));
-        }
-    }
-
-    // sort by time (stable)
-    events.sort_by_key(|(t, _)| *t);
-
-    let mut i = 0usize;
-    let mut last_time: u64 = 0;
-
-    while i < events.len() {
-        let time = events[i].0;
-
-        // process all events at this absolute time
-        while i < events.len() && events[i].0 == time {
-            match &events[i].1 {
-                TrackEventKind::Midi { channel: _, message } => {
+        for track in &self.tracks {
+            let mut sequences: [TimeByteSequence; 16] = from_fn(|_| TimeByteSequence::new());
+            let mut time: usize = 0;
+            for event in track {
+                time = time.checked_add(event.delta.as_int() as usize).unwrap();
+                if let TrackEventKind::Midi { channel: _, message } = event.kind {
                     match message {
                         MidiMessage::NoteOn { key, vel } => {
-                            // treat vel == 0 as NoteOff; otherwise require > min_vel to be "on"
                             let vel_val = vel.as_int();
                             let on = vel_val != 0 && vel_val > min_vel;
                             let note = key.as_int();
-                            if note >= min_note && note <= max_note && chunk_size != 0 {
-                                let group = ((note - min_note) / chunk_size) as usize;
-                                if group < last_state.len() {
-                                    let bit = ((note - min_note) % chunk_size) as usize;
-                                    let mask = 1usize.checked_shl(bit as u32).unwrap_or(0);
-                                    if on {
-                                        last_state[group] |= mask;
-                                    } else {
-                                        last_state[group] &= !mask;
-                                    }
+                            let group = (note / 8) as usize;
+                            if group < 16 {
+                                let bit = (note % 8) as usize;
+                                let mask = 1u8.checked_shl(bit as u32).unwrap_or(0);
+                                if on {
+                                    *sequences[group].get_value_or_default_mut(time) |= mask;
+                                } else {
+                                    *sequences[group].get_value_or_default_mut(time) &= !mask;
                                 }
                             }
                         }
                         MidiMessage::NoteOff { key, .. } => {
                             let note = key.as_int();
-                            if note >= min_note && note <= max_note && chunk_size != 0 {
-                                let group = ((note - min_note) / chunk_size) as usize;
-                                if group < last_state.len() {
-                                    let bit = ((note - min_note) % chunk_size) as usize;
-                                    let mask = 1usize.checked_shl(bit as u32).unwrap_or(0);
-                                    last_state[group] &= !mask;
-                                }
+                            let group = (note / 8) as usize;
+                            if group < 16 {
+                                let bit = (note % 8) as usize;
+                                let mask = 1u8.checked_shl(bit as u32).unwrap_or(0);
+                                *sequences[group].get_value_or_default_mut(time) &= !mask;
                             }
                         }
-                        _ => {}
+                        _ => continue
                     }
                 }
-                TrackEventKind::Meta(meta) => {
-                    if let MetaMessage::Tempo(t) = meta {
-                        tempo_changes.push(TempoState { time, state: t.as_int() });
-                    }
-                }
-                _ => {}
             }
-
-            i += 1;
+            merged_multi_sequence |= &Into::<TimeByteMultiSequence<16>>::into(sequences);
         }
 
-        // after applying all events at this time, emit snapshots if state changed
-        if time != last_time {
-            for (ci, &state) in last_state.iter().enumerate() {
-                if ci >= track_chunks.len() { break; }
-                let chunk = &mut track_chunks[ci];
-                if chunk.last().map_or(true, |e| e.state != state) {
-                    chunk.push(NotesPackedState {
-                        time,
-                        state,
-                    });
-                }
-            }
-            last_time = time;
-        }
+        merged_multi_sequence.optimize();
+
+        merged_multi_sequence
     }
-
-    Ok(Track {
-        note_states: track_chunks,
-       tempo_changes,
-       length: last_time,
-       timing: smf.header.timing,
-    })
 }
 
 fn gen_expr_from_chang_map(state_changes: &HashMap<isize, Vec<u64>>) -> String {
@@ -215,7 +168,7 @@ fn gen_expr_from_chang_map(state_changes: &HashMap<isize, Vec<u64>>) -> String {
     expr
 }
 
-fn chunk_to_funcs(chunk: &Vec<NotesPackedState>, max_events_per_func: usize) -> Vec<String> {
+fn chunk_to_funcs(chunk: &Vec<NotePackedStates>, max_events_per_func: usize) -> Vec<String> {
     let mut funcs: Vec<String> = Vec::new();
 
     let mut event_counter: usize = 0;
