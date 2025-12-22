@@ -1,34 +1,40 @@
-use crate::optionarray::*;
+use option_array::*;
 use std::mem::{size_of, transmute_copy};
 use std::marker::PhantomData;
-use crate::sequence::multisequence::*;
+use crate::multisequence::*;
+use bool_traits::*;
+use crate::sequenceview::*;
 
 // Src is the source type.
 // Dst is the destination type.
 // 1. if Src is u8, then N should be equal to unsigned integer X * Dst.
 // 2. if Dst is u8, then N should be equal to Src size * N.
 // N size of multisequence, which is made out of src type.
-pub struct MultiSequenceView<'a, Src: Copy, Dst: Copy, const STORAGE_N: usize>
-where
-    [u8; flag_bytes(STORAGE_N)]:,
-{
+pub struct MultiSequenceView<'a, Src, Dst, const STORAGE_N: usize>
+where   Src: Copy,
+        Dst: Copy,
+        [(); flag_bytes(STORAGE_N)]:, {
     parent: &'a MultiSequence<Src, STORAGE_N>,
     _marker: PhantomData<Dst>
 }
 
-pub trait EqualToZero {}
-impl EqualToZero for [(); 0] {}
+/// Raw-over-typed multi-sequence view.
+pub type ROTMultiSequenceView<'a, Src, const STORAGE_N: usize> = MultiSequenceView<'a, Src, u8, STORAGE_N>;
+
+/// Typed-over-raw multi-sequence view.
+pub type TORMultiSequenceView<'a, Dst, const STORAGE_N: usize> = MultiSequenceView<'a, u8, Dst, STORAGE_N>;
 
 //-------------------------------//
 // IMPLEMENTATION FOR TYPED VIEW //
 //-------------------------------//
 
-impl<'a, T: Copy, const STORAGE_N: usize> MultiSequenceView<'a, u8, T, STORAGE_N>
-where
-    [(); flag_bytes(STORAGE_N)]:,
-    [(); STORAGE_N % size_of::<T>()]: EqualToZero,
-{
-    fn new_typed(parent: &'a MultiSequence<u8, STORAGE_N>) -> Self {
+impl<'a, T, const STORAGE_N: usize> TORMultiSequenceView<'a, T, STORAGE_N>
+where   T: Copy,
+        [(); flag_bytes(STORAGE_N)]:,
+        Boolean<{STORAGE_N % size_of::<T>() == 0}>: IsTrue,
+        Boolean<{STORAGE_N == 0}>: IsFalse {
+
+    pub(crate) fn new_typed(parent: &'a MultiSequence<u8, STORAGE_N>) -> Self {
         Self {
             parent,
             _marker: PhantomData,
@@ -46,7 +52,7 @@ where
             return None;
         }
 
-        let arr = self.parent.map.get(&time)?;
+        let arr = self.parent.get(&time)?;
 
         let mut bytes: [u8; size_of::<T>()] = [0; size_of::<T>()];
 
@@ -69,8 +75,8 @@ where
             panic!("Out of bounds");
         }
 
-        self.parent
-        .map
+        self
+        .parent
         .range(..=time)
         .rev()
         .find_map(|(_, arr)| {
@@ -91,11 +97,11 @@ where
 // IMPLEMENTATION FOR RAW VIEW //
 //-----------------------------//
 
-impl<'a, T: Copy, const STORAGE_N: usize> MultiSequenceView<'a, T, u8, STORAGE_N>
+impl<'a, T: Copy, const STORAGE_N: usize> ROTMultiSequenceView<'a, T, STORAGE_N>
 where
     [(); flag_bytes(STORAGE_N)]:,
 {
-    fn new_raw(parent: &'a MultiSequence<T, STORAGE_N>) -> Self {
+    pub(crate) fn new_raw(parent: &'a MultiSequence<T, STORAGE_N>) -> Self {
         Self {
             parent,
             _marker: PhantomData,
@@ -110,7 +116,7 @@ where
         let elem_index = flat_index / elem_size;
         let byte_offset = flat_index % elem_size;
 
-        let arr = self.parent.map.get(&time)?;
+        let arr = self.parent.get(&time)?;
         let value = arr.get(elem_index)?;
 
         let bytes: [u8; size_of::<T>()] = unsafe { transmute_copy(value) };
@@ -125,8 +131,8 @@ where
         let elem_index = flat_index / elem_size;
         let byte_offset = flat_index % elem_size;
 
-        self.parent
-        .map
+        self
+        .parent
         .range(..=time)
         .rev()
         .find_map(|(_, arr)| {
@@ -140,12 +146,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::sequence::{multisequence::MultiSequence, multisequenceview::{MultiSequenceView}};
+    use crate::{multisequence::MultiSequence, multisequenceview::{MultiSequenceView}};
 
     #[test]
     fn test0() {
-        let multisequence = MultiSequence::<u8, 16>::new();
-        let typed_view = MultiSequenceView::<_, u16, _>::new_typed(&multisequence);
+        let multi_sequence = MultiSequence::<u64, 16>::new();
+        let _raw_view = multi_sequence.view_raw();
+
+        let multi_sequence2 = MultiSequence::<u8, 16>::new();
+        let typed_view = multi_sequence2.view_as::<u16>();
 
         typed_view.floor_typed(127, 8);
 

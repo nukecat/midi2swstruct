@@ -1,10 +1,6 @@
 #![feature(adt_const_params)]
 #![feature(generic_const_exprs)]
 
-pub mod optionarray;
-pub mod timebytesequence;
-pub mod sequence;
-
 use sw_structure_io::structs::*;
 use sw_structure_io::io::WriteBuilding;
 use clap::Parser;

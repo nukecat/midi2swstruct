@@ -1,38 +1,24 @@
-use std::collections::{BTreeMap, btree_map::Entry};
+use std::collections::BTreeMap;
+use std::ops::{Deref, DerefMut};
 
-pub struct Sequence<T> {
-    map: BTreeMap<usize, T>
+pub struct Sequence<T>(BTreeMap<usize, T>);
+
+impl<T> Deref for Sequence<T> {
+    type Target = BTreeMap<usize, T>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for Sequence<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 impl<T> Sequence<T> {
     pub fn new() -> Self {
-        Self {
-            map: BTreeMap::new(),
-        }
-    }
-
-    /// Insert or overwrite value at exact time
-    pub fn insert(&mut self, time: usize, value: T) {
-        self.map.insert(time, value);
-    }
-
-    pub fn get(&self, time: usize) -> Option<&T> {
-        self.map.get(&time)
-    }
-
-    /// Returns a mutable reference, if value is present.
-    pub fn get_mut(&mut self, time: usize) -> Option<&mut T> {
-        self.map.get_mut(&time)
-    }
-
-    /// Remove value at exact time
-    pub fn remove(&mut self, time: usize) {
-        self.map.remove(&time);
-    }
-
-    /// Iterate raw events (no timeline logic)
-    pub fn iter(&self) -> impl Iterator<Item = (&usize, &T)> {
-        self.map.iter()
+        Self(BTreeMap::new())
     }
 
     /// Get value at time (last known value <= time) or default.
@@ -40,11 +26,11 @@ impl<T> Sequence<T> {
     where
         T: Clone + Default
     {
-        self.map
-        .range(..=time)
-        .next_back()
-        .map(|(_, v)| v.clone())
-        .unwrap_or_default()
+        self
+            .range(..=time)
+            .next_back()
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
     }
 
     /// Removes entries that are redundant (value equal to previous)
@@ -57,7 +43,7 @@ impl<T> Sequence<T> {
         let mut last_value: T = T::default(); // default before first entry
         let mut keys_to_remove = Vec::new();
 
-        for (&time, value) in &self.map {
+        for (&time, value) in self.iter() {
             if *value == last_value {
                 keys_to_remove.push(time);
             } else {
@@ -66,7 +52,7 @@ impl<T> Sequence<T> {
         }
 
         for key in keys_to_remove {
-            self.map.remove(&key);
+            self.remove(&key);
         }
     }
 }
@@ -87,13 +73,13 @@ macro_rules! impl_bitwise_for_sequence {
 
                 // collect all time keys
                 let times: Vec<_> = self
-                .map
-                .keys()
-                .chain(rhs.map.keys())
-                .copied()
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect();
+                    .0
+                    .keys()
+                    .chain(rhs.0.keys())
+                    .copied()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
 
                 for &time in &times {
                     let value = self.floor(time) $op rhs.floor(time);
@@ -120,7 +106,7 @@ where
 
     fn not(self) -> Sequence<T> {
         let mut result = Sequence::new();
-        for (&time, &val) in &self.map {
+        for (&time, &val) in &self.0 {
             result.insert(time, !val);
         }
         result
@@ -137,10 +123,10 @@ macro_rules! impl_bitwise_assign_sequence {
                 std::ops::$trait2<Output = T>
         {
             fn $method(&mut self, rhs: &Sequence<T>) {
-                let mut all_times: Vec<usize> = self.map.keys()
-                .chain(rhs.map.keys())
-                .copied()
-                .collect();
+                let mut all_times: Vec<usize> = self.0.keys()
+                    .chain(rhs.0.keys())
+                    .copied()
+                    .collect();
                 all_times.sort_unstable();
                 all_times.dedup();
 
@@ -152,7 +138,7 @@ macro_rules! impl_bitwise_assign_sequence {
                     if result != T::default() {
                         self.insert(time, result);
                     } else {
-                        self.map.remove(&time);
+                        self.0.remove(&time);
                     }
                 }
             }

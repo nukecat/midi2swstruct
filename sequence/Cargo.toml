@@ -1,0 +1,8 @@
+[package]
+name = "sequence"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bool_traits = { path = "../bool_traits" }
+option_array = { path = "../option_array" }
