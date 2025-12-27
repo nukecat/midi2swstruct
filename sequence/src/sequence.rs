@@ -3,19 +3,6 @@ use std::ops::{Deref, DerefMut};
 
 pub struct Sequence<T>(BTreeMap<usize, T>);
 
-impl<T> Deref for Sequence<T> {
-    type Target = BTreeMap<usize, T>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> DerefMut for Sequence<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
 impl<T> Sequence<T> {
     pub fn new() -> Self {
         Self(BTreeMap::new())

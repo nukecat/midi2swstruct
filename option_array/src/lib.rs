@@ -1,7 +1,7 @@
 #![feature(generic_const_exprs)]
 
-use std::array::from_fn;
-use std::mem::MaybeUninit;
+use std::array::{self, from_fn};
+use std::mem::{ManuallyDrop, MaybeUninit};
 
 pub const fn flag_bytes(n: usize) -> usize {
     (n + 7) / 8
@@ -222,32 +222,51 @@ where [(); flag_bytes(N)]:, {
     }
 }
 
-impl<T, const N: usize> Into<[Option<T>; N]> for OptionArray<T, N>
-where [(); flag_bytes(N)]:, T: Clone {
-    fn into(self) -> [Option<T>; N] {
-        from_fn(|i| self.get(i).cloned())
+impl<T, const N: usize> From<OptionArray<T, N>> for [Option<T>; N]
+where   [(); flag_bytes(N)]:, {
+    fn from(value: OptionArray<T, N>) -> Self {
+        let value = ManuallyDrop::new(value);
+
+        from_fn(|i| {
+            if i < N && value.is_present(i) {
+                Some(unsafe { value.data[i].assume_init_read() })
+            } else {
+                None
+            }
+        })
     }
 }
 
+
 impl<T, const N: usize> From<[Option<T>; N]> for OptionArray<T, N>
-where [(); flag_bytes(N)]:, T: Clone {
-    fn from(value: [Option<T>; N]) -> Self {
-        // SAFETY: An array of MaybeUninit<T> is always valid
-        let mut data: [MaybeUninit<T>; N] = unsafe { MaybeUninit::uninit().assume_init() };
+where   [(); flag_bytes(N)]:, {
+    fn from(mut value: [Option<T>; N]) -> Self {
         let mut flags = [0u8; flag_bytes(N)];
 
+        let mut data: [MaybeUninit<T>; N] =
+        unsafe { MaybeUninit::uninit().assume_init() };
+
         for i in 0..N {
-            if let Some(v) = &value[i] {
-                data[i].write(v.clone()); // clone T if necessary
+            if let Some(v) = value[i].take() {
+                data[i].write(v);
+
                 let byte = i / 8;
                 let bit = i % 8;
-                flags[byte] |= 1 << bit; // mark as initialized
+                flags[byte] |= 1 << bit;
             }
         }
 
+        Self { flags, data }
+    }
+}
+
+
+impl<T, const N: usize> From<[T; N]> for OptionArray<T, N>
+where [(); flag_bytes(N)]:, {
+    fn from(array: [T; N]) -> Self {
         Self {
-            flags,
-            data,
+            flags: [0xFF; flag_bytes(N)],
+            data: array.map(MaybeUninit::new)
         }
     }
 }
