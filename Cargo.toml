@@ -8,11 +8,3 @@ clap = { version = "4.5.53", features = ["derive"] }
 midly = "0.5.3"
 num-traits = "0.2.19"
 sw-structure-io = { git = "https://github.com/nukecat/sw-structure-io.git" }
-sequence = { path = "../midi2swstruct/sequence" }
-
-[workspace]
-members = [
-    "option_array",
-    "bool_traits",
-    "sequence"
-]
