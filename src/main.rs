@@ -1,11 +1,14 @@
+use clap::error::KindFormatter;
 use sw_structure_io::structs::*;
 use sw_structure_io::io::WriteBuilding;
 use clap::Parser;
+use std::array::from_fn;
 use std::fs::File;
 use std::io::{self, Read};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ops::{Add, Sub};
 use midly::{Smf, TrackEventKind, MidiMessage};
-use std::fmt::Write;
+use std::fmt::{Write, write};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -47,23 +50,77 @@ struct Args {
     /// If true, music will repeat.
     #[arg(short, long, default_value = "false")]
     repeat: bool,
+
+    /// How many note changes can be encoded in one value.
+    #[arg(short, long, default_value = "24")]
+    notes_per_value: usize
 }
 
-#[derive(Clone, Debug)]
-struct NoteEvent {
-    time: u32,
-    pitch: u8,
-    state: bool
+fn pitch_to_freq(midi: u8) -> f32 {
+    440.0 * 2.0_f32.powf((midi as f32 - 69.0) / 12.0)
 }
 
-#[derive(Clone, Debug)]
-struct PackedNotesEvent {
-    time: u32,
-    data: u32
-}
+fn generate_music_player(
+    smf: Smf,
+    notes_per_value: usize,
+    min_pitch: u8,
+    max_pitch: u8,
+    min_velocity: u8,
+    repeat: bool,
+    max_events_per_func: usize
+) -> std::result::Result<Building, Box<dyn std::error::Error>> {
+    // Special positions for blocks.
+    const SWITCH_POSITION   : [f32; 3] = [ 0.0 , 0.015625 ,  0.25 ];
+    const TONE_GEN_POSITION : [f32; 3] = [ 0.0 , 0.0      , -0.25 ];
 
-fn collect_note_events(smf: Smf, min_velocity: u8) -> Vec<NoteEvent> {
-    let mut note_events: Vec<NoteEvent> = Vec::new();
+    // Initializing array with blocks that are always present.
+    let mut blocks: Vec<Block> = vec![
+        Block { // 0
+            id: 129, // Math block
+            metadata: Some(Metadata {
+                type_settings: TypeSettings::MathBlock {
+                    function: {
+                        let mut f = String::new();
+                        write!(f, "s=0.0001;B=1-B;A*(Lval+s){}", if repeat { "%1" } else { "" } )?;
+                        f
+                    },
+                    incoming_connections_order: Vec::new(),
+                    slots: Vec::new()
+                },
+                ..Default::default()
+            }),
+            connections: vec![2, 4],
+            ..Default::default()
+        },
+        Block { // 1
+            id: 9, // Switch
+            position: SWITCH_POSITION,
+            connections: vec![0],
+            ..Default::default()
+        },
+        Block { // 2 - Forces math block to update
+            id: 78, // OR
+            connections: vec![0],
+            name: "2".into(),
+            ..Default::default()
+        },
+        Block { // 3 - Main math block input (for tempo)
+            id: 78, // OR
+            connections: vec![0],
+            name: "3".into(),
+            ..Default::default()
+        },
+        Block { // 4 - Main math block output
+            id: 78, // OR
+            name: "4".into(),
+            ..Default::default()
+        }
+    ];
+
+    // Collecting events from all tracks in midi.
+    let mut note_events: Vec<(u32, u8, bool)> = Vec::new();
+    let mut used_keys = [false; 128];
+    let mut total_len = 0;
 
     for track in &smf.tracks {
         let mut abs_time = 0;
@@ -74,194 +131,101 @@ fn collect_note_events(smf: Smf, min_velocity: u8) -> Vec<NoteEvent> {
                 match message {
                     MidiMessage::NoteOn { key, vel } => {
                         if vel.as_int() < min_velocity { continue; }
-                        note_events.push(NoteEvent {
-                            time: abs_time,
-                            pitch: key.as_int(),
-                                         state: true
-                        });
-                    }
-                    MidiMessage::NoteOff { key, .. } => {
-                        note_events.push(NoteEvent {
-                            time: abs_time,
-                            pitch: key.as_int(),
-                                         state: false
-                        });
+                        let state = vel.as_int() != 0;
+                        note_events.push((abs_time, key.as_int(), state));
+                        used_keys[key.as_int() as usize] = state;
+                    },
+                    MidiMessage::NoteOff { key, vel } => {
+                        if vel.as_int() < min_velocity { continue; }
+                        note_events.push((abs_time, key.as_int(), false));
+                        used_keys[key.as_int() as usize] = true;
                     }
                     _ => {}
                 }
             }
         }
+        total_len = abs_time;
     }
 
-    note_events
-}
+    // Sorting events (because we collected them from different tracks and instruments)
+    note_events.sort_by_key(|e| e.0);
 
-fn collect_into_packed_channels(mut note_events: Vec<NoteEvent>, pitches_per_channel: usize) -> (Vec<Vec<PackedNotesEvent>>, Vec<u8>, u32) {
-    // Finding used pitches
-    let mut keys = [false; 128];
-    let mut max_ticks = 0u32;
-    for e in &note_events {
-        max_ticks = max_ticks.max(e.time);
-        keys[e.pitch as usize] = true;
-    }
-
-    let used_pitches: Vec<u8> = keys
-    .iter()
-    .enumerate()
-    .filter_map(|(pitch, &used)| if used { Some(pitch as u8) } else { None })
-    .collect();
-
-    // Map for mapping pitch to index
-    let mut pitch_to_index: HashMap<u8, usize> = HashMap::new();
-    for (i, &p) in used_pitches.iter().enumerate() {
-        pitch_to_index.insert(p, i);
-    }
-
-    let num_channels = (used_pitches.len() + pitches_per_channel - 1) / pitches_per_channel;
-
-    let mut packed_channels: Vec<Vec<PackedNotesEvent>> = vec![Vec::new(); num_channels];
-    let mut channel_states: Vec<u32> = vec![0; num_channels];
-    let mut pitch_counters: Vec<u32> = vec![0; used_pitches.len()];
-
-    note_events.sort_by_key(|e| e.time);
+    // Creating hash map for mapping used keys to indices.
+    let mut key_mapping: HashMap<u8, usize> = HashMap::new();
+    let mut index_to_key: Vec<u8> = Vec::new();
 
     let mut i = 0;
+
+    for (key, &is_used) in used_keys.iter().enumerate() {
+        if !is_used { continue; }
+        key_mapping.insert(key as u8, i);
+        index_to_key.push(key as u8);
+        i += 1;
+    }
+
+    let used_keys_count = key_mapping.len();
+    let channels_count = ((used_keys_count.checked_sub(1).unwrap_or(0)) / notes_per_value) + 1;
+
+    // Encoding note changes into bits of values.
+    let mut note_counters = vec![0u8; used_keys_count];
+    let mut data_changes: Vec<Vec<(u32, u32)>> = vec![Vec::new(); channels_count];
+
+    let mut i = 0;
+
     while i < note_events.len() {
-        let current_time = note_events[i].time;
+        let current_time = note_events[i].0;
 
-        // Process all events at the same time
         let mut j = i;
-        while j < note_events.len() && note_events[j].time == current_time {
-            let e = &note_events[j];
-
-            if let Some(&index) = pitch_to_index.get(&e.pitch) {
-                let channel = index / pitches_per_channel;
-                let bit_pos = index % pitches_per_channel;
-
-                // Update counter
-                if e.state {
-                    // !todo
-                    // needs check for overflow
-                    pitch_counters[index] += 1;
-                    if pitch_counters[index] == 1 {
-                        // First note on → set bit
-                        channel_states[channel] |= 1 << bit_pos;
-                    }
-                } else {
-                    if pitch_counters[index] > 0 {
-                        pitch_counters[index] -= 1;
-                        if pitch_counters[index] == 0 {
-                            // Last note off → clear bit
-                            channel_states[channel] &= !(1 << bit_pos);
-                        }
-                    }
-                }
-            }
+        while j < note_events.len() && note_events[j].0 == current_time {
             j += 1;
         }
 
-        // Push one PackedNotesEvent per channel for this time
-        for channel in 0..num_channels {
-            packed_channels[channel].push(PackedNotesEvent {
-                time: current_time,
-                data: channel_states[channel],
-            });
+        let events = &note_events[i..j];
+
+        for &(_, key, state) in events {
+            let mapped = key_mapping[&key];
+            // !todo: needs check for overflow
+            if state == true {
+                note_counters[mapped] = note_counters[mapped]
+                .checked_add(1)
+                .unwrap_or(u8::MAX);
+            } else {
+                note_counters[mapped] = note_counters[mapped]
+                .checked_sub(1)
+                .unwrap_or(0);
+            }
         }
 
-        i = j; // move to next group of events
+        for c in 0..channels_count {
+            let prev_data = data_changes[c].last().unwrap_or(&(0, 0)).1;
+            let mut data = 0;
+            for bit in 0..notes_per_value {
+                let index = c * notes_per_value + bit;
+                if !(index < used_keys_count) || note_counters[index] < 1 { continue; }
+                data = data | 1 << bit;
+            }
+            if data != prev_data {
+                data_changes[c].push((current_time, data));
+            }
+        }
+
+        i = j;
     }
 
-    (packed_channels, used_pitches, max_ticks)
-}
-
-pub fn pitch_to_freq(pitch: u8) -> f32 {
-    440.0 * 2.0_f32.powf((pitch as f32 - 69.0) / 12.0)
-}
-
-fn generate_music_player(smf: Smf, min_velocity: u8, notes_per_channel: usize) -> std::result::Result<Building, Box<dyn std::error::Error>> {
-    const SWITCH_POSITION         : [f32; 3] = [ 0.0,  0.03125, -0.25 ];
-    const TONE_GENERATOR_POSITION : [f32; 3] = [ 0.0,  0.0,      0.25 ];
-
-    let root = Root {
-        position: [ 0.0, 0.0, 0.0 ],
-        rotation: [ 0.0, 0.0, 0.0 ]
-    };
-
-    let (packed_channels, used_pitches, max_ticks) = collect_into_packed_channels(collect_note_events(smf, min_velocity), notes_per_channel);
-
-    fn math_block(function: String) -> Block {
-        Block {
-            id: 129,
-            metadata: Some(Metadata {
-                type_settings: TypeSettings::MathBlock {
-                    function: function,
-                    incoming_connections_order: Vec::new(),
-                    slots: Vec::new()
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
+    // Decoder function
+    let mut decoder_func = String::new();
+    for (p, ind) in (1..=notes_per_value).rev().enumerate() {
+        write!(decoder_func, "ind({})=step(0.5,(A%1/2^{})*2^{})+step(1,A);", ind, p, p)?;
     }
+    decoder_func.push('0');
 
-    let mut blocks: Vec<Block> = vec![
-        Block { // 0
-            id: 129, // Math block
-            metadata: Some(Metadata {
-                type_settings: TypeSettings::MathBlock {
-                    function: "s=0.001;A*(Lval+s)%1".into(),
-                    incoming_connections_order: Vec::new(),
-                        slots: Vec::new()
-                },
-                ..Default::default()
-            }),
-            connections: vec![2],
-            ..Default::default()
-        },
-        Block { // 1
-            id: 9, // Switch
-            position: SWITCH_POSITION,
-            connections: vec![0, 4],
-            ..Default::default()
-        },
-        Block { // 2
-            id: 78, // OR
-            ..Default::default()
-        },
-        Block { // 3
-            id: 78, // OR
-            connections: vec![0],
-            ..Default::default()
-        },
-        Block { // 4
-            id: 84, // Timer
-            metadata: Some(Metadata {
-                values: vec![0.0, 0.0],
-                ..Default::default()
-            }),
-            connections: vec![0],
-            ..Default::default()
-        }
-    ];
-
-    for (c, channel) in packed_channels.iter().enumerate() {
-        let mut prev_data: u32 = 0;
-        let mut i: usize = 0;
-        let mut changes_keys_grouped: HashMap<i64, Vec<u32>> = HashMap::new();
-
-        let mut converter_func = String::new();
-
-        for (k, k2) in (1..=notes_per_channel).rev().enumerate() {
-            write!(converter_func, "ind({})=step(0.5,(A%1/2^{})*2^{})+step(1,A);", k2,k,k)?;
-        }
-
-        converter_func.push('0');
-
+    // Generating funcs and creating blocks
+    for c in 0..channels_count {
         blocks.push(Block {
             id: 129,
             metadata: Some(Metadata {
                 type_settings: TypeSettings::MathBlock {
-                    function: converter_func,
+                    function: decoder_func.clone(),
                     incoming_connections_order: Vec::new(),
                     slots: Vec::new()
                 },
@@ -269,59 +233,67 @@ fn generate_music_player(smf: Smf, min_velocity: u8, notes_per_channel: usize) -
             }),
             ..Default::default()
         });
-        let converter_block_index: u16 = (blocks.len() - 1).try_into()?;
+        let decoder_index: u16 = (blocks.len() - 1).try_into()?;
 
         blocks.push(Block {
             id: 78,
-            connections: vec![converter_block_index],
+            connections: vec![decoder_index],
             ..Default::default()
         });
-        let output_block_index: u16 = (blocks.len() - 1).try_into()?;
+        let decoder_input_index: u16 = (blocks.len() - 1).try_into()?;
 
-        for k in 0..notes_per_channel {
-            let index = c * notes_per_channel + k;
-            let pitch = if let Some(&pitch) = used_pitches.get(index) {
-                pitch
-            } else { continue; };
-
-            println!("Channel {}, Bit {} -> Pitch {} -> Frequency {}", c, k, pitch, pitch_to_freq(pitch));
+        for n in 0..notes_per_value {
+            let index = c * notes_per_value + n;
+            if !(index < used_keys_count) { continue; }
+            let pitch = index_to_key[index];
+            let freq = pitch_to_freq(pitch);
 
             blocks.push(Block {
                 id: 125,
-                position: TONE_GENERATOR_POSITION,
+                position: TONE_GEN_POSITION,
                 metadata: Some(Metadata {
-                    values: vec![pitch_to_freq(pitch), 50.0],
+                    values: vec![freq, 100.0],
                     ..Default::default()
                 }),
                 ..Default::default()
             });
-
             let tone_gen_index: u16 = (blocks.len() - 1).try_into()?;
-            blocks[converter_block_index as usize].connections.push(tone_gen_index);
+
+            if let Some(decoder) = blocks.get_mut(decoder_index as usize) {
+                decoder.connections.push(tone_gen_index);
+            }
         }
 
-        for (e, event) in channel.iter().enumerate() {
-            if i > 1024 || e + 1 >= channel.len() {
+        let mut i = 0;
+        let mut prev_data = 0;
+        let mut diffs: HashMap<i64, Vec<u32>> = HashMap::new();
+
+        #[cfg(debug_assertions)]
+        let mut diff_check = 0;
+
+        for (n, &(time, data)) in data_changes[c].iter().enumerate() {
+            i += 1;
+            if i > max_events_per_func || n == data_changes[c].len() {
                 let mut function = String::new();
-                write!(function, "x=A*{};n=", max_ticks)?;
-                for (x, change) in changes_keys_grouped.iter().enumerate() {
-                    if x > 0 {
-                        function.push('+');
-                    }
 
-                    write!(function, "{}*(", change.0)?;
+                write!(function, "x=A*{};n=", total_len)?;
 
-                    for (n, time) in change.1.iter().enumerate() {
-                        if n > 0 {
-                            function.push('+');
-                        }
-                        write!(function, "step({},x)", time)?;
+                for (j, (&diff, time_keys)) in diffs.iter().enumerate() {
+                    if j > 0 { function.push('+'); }
+
+                    write!(function, "{}*(", diff)?;
+
+                    for (k, t) in time_keys.iter().enumerate() {
+                        if k > 0 { function.push('+'); }
+                        write!(function, "step({},x)", t)?;
                     }
 
                     function.push(')');
                 }
-                write!(function, "-{}*step({},x);", prev_data, event.time)?;
-                write!(function, "n/{}", 2usize.pow(notes_per_channel as u32))?;
+
+                write!(function, "-{}*step({},x)", prev_data, time)?;
+
+                write!(function, ";n/{}", 2u32.pow(notes_per_value as u32))?;
 
                 blocks.push(Block {
                     id: 129,
@@ -333,32 +305,41 @@ fn generate_music_player(smf: Smf, min_velocity: u8, notes_per_channel: usize) -
                         },
                         ..Default::default()
                     }),
-                    connections: vec![output_block_index],
+                    connections: vec![decoder_input_index],
                     ..Default::default()
                 });
+                let data_block_index: u16 = (blocks.len() - 1).try_into()?;
 
-                let index: u16 = (blocks.len() - 1).try_into()?;
-                if let Some(b) = blocks.get_mut(2) {
-                    b.connections.push(index);
+                if let Some(main_output) = blocks.get_mut(4) {
+                    main_output.connections.push(data_block_index);
                 }
 
                 i = 0;
-                changes_keys_grouped = HashMap::new();
+                prev_data = 0;
+                diffs = HashMap::new();
             }
 
-            i += 1;
-            let change = event.data as i64 - prev_data as i64;
-            prev_data = event.data;
+            let diff = data as i64 - prev_data as i64;
 
-            changes_keys_grouped
-            .entry(change)
-            .and_modify(|v| v.push(event.time))
-            .or_insert(vec![event.time]);
+            #[cfg(debug_assertions)]
+            {
+                diff_check += diff;
+                println!("Diff: {}", diff);
+                println!("Value: {}", diff_check);
+                assert!(diff_check >= 0);
+            }
+
+            diffs
+            .entry(diff)
+            .and_modify(|e| e.push(time))
+            .or_insert(vec![time]);
+
+            prev_data = data;
         }
     }
 
     Ok(Building {
-        roots: vec![root],
+        roots: vec![Root::default()],
         blocks
     })
 }
@@ -372,23 +353,28 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let smf = Smf::parse(&buffer)?;
 
-    let building = generate_music_player(smf, 1, 24)?;
+    let building = generate_music_player(
+        smf,
+        args.notes_per_value,
+        args.min_pitch,
+        args.max_pitch,
+        args.min_velocity,
+        args.repeat,
+        args.max_events_per_func
+    )?;
 
     let output_path = match args.output {
         Some(p) => p,
         None => {
-            // generate default name in current dir
             let mut default_name = args
             .input
             .file_stem()
             .unwrap_or_else(|| std::ffi::OsStr::new("output"))
             .to_os_string();
-            default_name.push(".structure"); // or whatever extension
+            default_name.push(".structure");
             std::env::current_dir().unwrap().join(default_name)
         }
     };
-
-    println!("Output: {:?}", output_path);
 
     let mut output_file = File::create(output_path)?;
     output_file.write_building(&building, 0)?;
