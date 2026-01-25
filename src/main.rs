@@ -251,8 +251,8 @@ fn generate_music_player(smf: Smf, min_velocity: u8, notes_per_channel: usize) -
 
         let mut converter_func = String::new();
 
-        for k in 1..=notes_per_channel {
-            write!(converter_func, "ind({})=step(0.5,(A%1/2^{})*2^{})+step(1,A);", k,k,k)?;
+        for (k, k2) in (1..=notes_per_channel).rev().enumerate() {
+            write!(converter_func, "ind({})=step(0.5,(A%1/2^{})*2^{})+step(1,A);", k2,k,k)?;
         }
 
         converter_func.push('0');
@@ -280,30 +280,24 @@ fn generate_music_player(smf: Smf, min_velocity: u8, notes_per_channel: usize) -
 
         for k in 0..notes_per_channel {
             let index = c * notes_per_channel + k;
-            println!("Index: {}", index);
-            let pitch = if let Some(pitch) = used_pitches.get(index) {
+            let pitch = if let Some(&pitch) = used_pitches.get(index) {
                 pitch
-            } else {
-                continue;
-            };
-            println!("Pitch: {}", pitch);
-            println!("Frequency: {}", pitch_to_freq(*pitch));
+            } else { continue; };
+
+            println!("Channel {}, Bit {} -> Pitch {} -> Frequency {}", c, k, pitch, pitch_to_freq(pitch));
 
             blocks.push(Block {
                 id: 125,
                 position: TONE_GENERATOR_POSITION,
                 metadata: Some(Metadata {
-                    values: vec![pitch_to_freq(*pitch), 50.0],
+                    values: vec![pitch_to_freq(pitch), 50.0],
                     ..Default::default()
                 }),
                 ..Default::default()
             });
 
             let tone_gen_index: u16 = (blocks.len() - 1).try_into()?;
-
-            if let Some(converter_block) = blocks.get_mut(converter_block_index as usize) {
-                converter_block.connections.push(tone_gen_index);
-            }
+            blocks[converter_block_index as usize].connections.push(tone_gen_index);
         }
 
         for (e, event) in channel.iter().enumerate() {
