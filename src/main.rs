@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::Read;
 use midly::Smf;
 use std::path::PathBuf;
+use anyhow::Result;
 
 use midi2swstruct::generate_music_player;
 
@@ -52,7 +53,7 @@ struct Args {
     notes_per_value: usize
 }
 
-fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let args = Args::parse();
 
     let mut file = File::open(&args.input)?;

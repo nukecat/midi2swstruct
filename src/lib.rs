@@ -2,6 +2,17 @@ use std::collections::{HashMap};
 use std::fmt::Write;
 use midly::{Smf, TrackEventKind, MidiMessage, Timing, MetaMessage};
 use sw_structure_io::structs::{Root, Block, Building, Metadata, TypeSettings};
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum Error {
+    #[error("formatting error")]
+    Format(#[from] std::fmt::Error),
+    #[error("int conversion error")]
+    FromInt(#[from] std::num::TryFromIntError)
+}
+
+type Result<T> = std::result::Result<T, Error>;
 
 fn pitch_to_freq(midi: u8) -> f32 {
     440.0 * 2.0_f32.powf((midi as f32 - 69.0) / 12.0)
@@ -62,7 +73,7 @@ pub fn generate_music_player(
     min_velocity: u8,
     repeat: bool,
     max_events_per_func: usize
-) -> std::result::Result<Building, Box<dyn std::error::Error>> {
+) -> Result<Building> {
     // Special positions for blocks.
     const SWITCH_POSITION   : [f32; 3] = [ 0.0 , 0.015625 ,  0.25 ];
     const TONE_GEN_POSITION : [f32; 3] = [ 0.0 , 0.0      , -0.25 ];
