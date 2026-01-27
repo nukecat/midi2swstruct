@@ -162,9 +162,7 @@ fn generate_music_player(
     note_events.sort_by_key(|e| e.0);
     tempo_events.sort_by_key(|e| e.0);
 
-    if tempo_events.len() <= 1 {
-        tempo_events.push((u32::MAX, 120));
-    }
+    tempo_events.push((u32::MAX, 120));
 
     // Creating hash map for mapping used keys to indices.
     let mut key_mapping: HashMap<u8, usize> = HashMap::new();
