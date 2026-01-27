@@ -17,12 +17,16 @@ use midi2swstruct::generate_music_player;
 )]
 struct Args {
     /// Input MIDI-file.
-    #[arg(short, long)]
+    #[arg(value_name = "INPUT", required = true)]
     input: PathBuf,
 
     /// Optional output path.
     #[arg(short, long)]
     output: Option<PathBuf>,
+
+    /// Write output to stdout instead of file.
+    #[arg(long, default_value_t = false)]
+    stdout: bool,
 
     /// Minimal note pitch.
     #[arg(long, default_value = "27")]
