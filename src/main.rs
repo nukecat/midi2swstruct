@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::Read;
 use midly::Smf;
 use std::path::PathBuf;
-use anyhow::Result;
+use anyhow::{Result, Context};
 
 use midi2swstruct::generate_music_player;
 
@@ -60,12 +60,18 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let mut file = File::open(&args.input)?;
+    // Read MIDI file
     let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
 
-    let smf = Smf::parse(&buffer)?;
+    File::open(&args.input)
+    .with_context(|| format!("Failed to open input file {:?}", args.input))?
+    .read_to_end(&mut buffer)
+    .with_context(|| format!("Failed to read input file {:?}", args.input))?;
 
+    let smf = Smf::parse(&buffer)
+    .with_context(|| format!("Failed to parse MIDI file {:?}", args.input))?;
+
+    // Generate building
     let building = generate_music_player(
         smf,
         args.notes_per_value,
@@ -73,24 +79,34 @@ fn main() -> Result<()> {
         args.max_pitch,
         args.min_velocity,
         args.repeat,
-        args.max_events_per_func
-    )?;
+        args.max_events_per_func,
+    ).with_context(|| format!("Failed to generate building"))?;
 
-    let output_path = match args.output {
-        Some(p) => p,
-        None => {
-            let mut default_name = args
-            .input
-            .file_stem()
-            .unwrap_or_else(|| std::ffi::OsStr::new("output"))
-            .to_os_string();
-            default_name.push(".structure");
-            std::env::current_dir().unwrap().join(default_name)
-        }
-    };
+    // Write output
+    if args.stdout {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        handle.write_building(&building, args.structure_version).with_context(|| format!("Failed to serialize building"))?;
+    } else {
+        let output_path = match args.output {
+            Some(p) => p,
+            None => {
+                let mut default_name = args
+                .input
+                .file_stem()
+                .unwrap_or_else(|| std::ffi::OsStr::new("output"))
+                .to_os_string();
+                default_name.push(".structure");
+                std::env::current_dir()?.join(default_name)
+            }
+        };
+        let mut output_file = File::create(&output_path)
+        .with_context(|| format!("Failed to create output file {:?}", output_path))?;
 
-    let mut output_file = File::create(output_path)?;
-    output_file.write_building(&building, args.structure_version)?;
+        output_file
+        .write_building(&building, args.structure_version).with_context(|| format!("Failed to serialize building"))?;
+        println!("Wrote structure file to {:?}", output_path);
+    }
 
     Ok(())
 }
