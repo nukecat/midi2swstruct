@@ -9,7 +9,9 @@ pub enum Error {
     #[error("formatting error")]
     Format(#[from] std::fmt::Error),
     #[error("int conversion error")]
-    FromInt(#[from] std::num::TryFromIntError)
+    FromInt(#[from] std::num::TryFromIntError),
+    #[error("unsupported timing")]
+    UnsupportedTimingSMPTE
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -80,7 +82,7 @@ pub fn generate_music_player(
 
     let ppq = match smf.header.timing {
         Timing::Metrical(t) => t.as_int() as u32,
-        Timing::Timecode(_, _) => panic!("SMPTE timing not supported")
+        Timing::Timecode(_, _) => return Err(Error::UnsupportedTimingSMPTE)
     };
 
     // Collecting events from all tracks in midi.
