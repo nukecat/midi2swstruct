@@ -60,7 +60,7 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Read MIDI file (or from stdin)
+    // Read MIDI file
     let mut buffer = Vec::new();
     if args.input == PathBuf::from("-") {
         std::io::stdin().read_to_end(&mut buffer)
