@@ -17,15 +17,15 @@
 ## Usage
 
 ```bash
-midi2swstruct --input song.mid [options]
+midi2swstruct song.mid [options]
 ```
 
 ### Options
 
 | Flag                      | Description                           | Default               |
 | ------------------------- | ------------------------------------- | --------------------- |
-| `-i, --input`             | Path to input MIDI file               | required              |
 | `-o, --output`            | Optional output path                  | `./<input>.structure` |
+| `--stdout`                | Output to stdout                      | false.                |
 | `--min-pitch`             | Minimal note pitch                    | 27                    |
 | `--max-pitch`             | Maximal note pitch                    | 111                   |
 | `-s, --structure-version` | Structure version                     | 0                     |
@@ -39,7 +39,7 @@ midi2swstruct --input song.mid [options]
 ## Example
 
 ```bash
-midi2swstruct -i my_song.mid -o output.structure --repeat --min-pitch 30 --max-pitch 100
+midi2swstruct my_song.mid -o output.structure --repeat --min-pitch 30 --max-pitch 100
 ```
 
 This converts `my_song.mid` into `output.structure` with looping enabled and only notes between pitch 30 and 100.
