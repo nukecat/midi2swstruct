@@ -29,11 +29,11 @@ struct Args {
     stdout: bool,
 
     /// Minimal note pitch.
-    #[arg(long, default_value = "27")]
+    #[arg(long, default_value = "27", value_parser = clap::value_parser!(u8).range(0..127))]
     min_pitch: u8,
 
     /// Maximal note pitch.
-    #[arg(long, default_value = "111")]
+    #[arg(long, default_value = "111", value_parser = clap::value_parser!(u8).range(0..127))]
     max_pitch: u8,
 
     /// Structure version.
@@ -45,7 +45,7 @@ struct Args {
     max_events_per_func: usize,
 
     /// Minimal velocity for note to be flagged as active.
-    #[arg(long, default_value = "1")]
+    #[arg(long, default_value = "1", value_parser = clap::value_parser!(u8).range(0..127))]
     min_velocity: u8,
 
     /// If true, music will repeat.
@@ -53,8 +53,8 @@ struct Args {
     repeat: bool,
 
     /// How many note changes can be encoded in one value.
-    #[arg(short, long, default_value = "24")]
-    notes_per_value: usize
+    #[arg(short, long, default_value = "24", value_parser = clap::value_parser!(u32).range(1..=24))]
+    notes_per_value: u32
 }
 
 fn main() -> Result<()> {
@@ -78,7 +78,7 @@ fn main() -> Result<()> {
     // Generate building
     let building = generate_music_player(
         smf,
-        args.notes_per_value,
+        args.notes_per_value as usize,
         args.min_pitch,
         args.max_pitch,
         args.min_velocity,
