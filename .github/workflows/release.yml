@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install rustup
+        shell: bash
+        run: |
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+
+      - name: Verify Rust install
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Install cross
+        run: cargo install cross --locked
+
+      - name: Build with cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Package binary
+        shell: bash
+        run: |
+          BIN_NAME=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[0].targets[] | select(.kind[] == "bin") | .name')
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          BUILD_TYPE=release
+          TARGET=${{ matrix.target }}
+
+          mkdir -p dist
+
+          if [[ "$TARGET" == *"windows"* ]]; then
+            BIN="$BIN_NAME.exe"
+          else
+            BIN="$BIN_NAME"
+          fi
+
+          OUTPUT_NAME="${BIN_NAME}-${VERSION}-${TARGET}-${BUILD_TYPE}"
+
+          cp target/$TARGET/$BUILD_TYPE/$BIN dist/$OUTPUT_NAME
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
