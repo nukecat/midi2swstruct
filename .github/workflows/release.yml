@@ -7,47 +7,41 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-
     strategy:
-      fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
-          - x86_64-pc-windows-msvc
-          - aarch64-pc-windows-msvc
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install rustup
-        shell: bash
+      - name: Install Rust
         run: |
           curl https://sh.rustup.rs -sSf | sh -s -- -y
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Install Rust toolchain
-        run: |
           rustup toolchain install stable
           rustup default stable
+          rustup target add ${{ matrix.target }}
 
-      - name: Verify Rust install
-        run: |
-          rustc --version
-          cargo --version
-
-      - name: Install cross
+      - name: Install cross (only on Linux/Windows)
+        if: matrix.os == 'ubuntu-latest'
         run: cargo install cross --locked
 
-      - name: Build with cross
-        run: cross build --release --target ${{ matrix.target }}
-
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Build
+        run: |
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
 
       - name: Package binary
         shell: bash
@@ -58,8 +52,6 @@ jobs:
           BUILD_TYPE=release
           TARGET=${{ matrix.target }}
 
-          mkdir -p dist
-
           if [[ "$TARGET" == *"windows"* ]]; then
             BIN="$BIN_NAME.exe"
           else
@@ -67,7 +59,7 @@ jobs:
           fi
 
           OUTPUT_NAME="${BIN_NAME}-${VERSION}-${TARGET}-${BUILD_TYPE}"
-
+          mkdir -p dist
           cp target/$TARGET/$BUILD_TYPE/$BIN dist/$OUTPUT_NAME
 
       - name: Upload artifact
