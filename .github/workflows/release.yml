@@ -70,3 +70,42 @@ jobs:
         with:
           name: ${{ matrix.target }}
           path: dist/*
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Show downloaded files (debug)
+        shell: bash
+        run: find artifacts -type f
+
+      - name: Create release (if not exists)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "${GITHUB_REPOSITORY#*/} ${TAG#v}" \
+            --generate-notes \
+            --latest \
+          || echo "Release already exists"
+
+      - name: Upload binaries to release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release upload "$TAG" artifacts/** --clobber
