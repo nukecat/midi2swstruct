@@ -25,7 +25,7 @@ midi2swstruct song.mid [options]
 | Flag                      | Description                           | Default               |
 | ------------------------- | ------------------------------------- | --------------------- |
 | `-o, --output`            | Optional output path                  | `./<input>.structure` |
-| `--stdout`                | Output to stdout                      | false.                |
+| `--stdout`                | Output to stdout                      | false                 |
 | `--min-pitch`             | Minimal note pitch                    | 27                    |
 | `--max-pitch`             | Maximal note pitch                    | 111                   |
 | `-s, --structure-version` | Structure version                     | 0                     |
