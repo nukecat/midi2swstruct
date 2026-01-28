@@ -60,13 +60,17 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Read MIDI file
+    // Read MIDI file (or from stdin)
     let mut buffer = Vec::new();
-
-    File::open(&args.input)
-    .with_context(|| format!("Failed to open input file {:?}", args.input))?
-    .read_to_end(&mut buffer)
-    .with_context(|| format!("Failed to read input file {:?}", args.input))?;
+    if args.input == PathBuf::from("-") {
+        std::io::stdin().read_to_end(&mut buffer)
+        .with_context(|| format!("Failed to read input file {:?}", args.input))?;
+    } else {
+        File::open(&args.input)
+        .with_context(|| format!("Failed to open input file {:?}", args.input))?
+        .read_to_end(&mut buffer)
+        .with_context(|| format!("Failed to read input file {:?}", args.input))?;
+    }
 
     let smf = Smf::parse(&buffer)
     .with_context(|| format!("Failed to parse MIDI file {:?}", args.input))?;
