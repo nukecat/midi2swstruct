@@ -49,21 +49,19 @@ jobs:
       - name: Package binary
         shell: bash
         run: |
-          BIN_NAME=$(cargo metadata --no-deps --format-version 1 \
+          BIN=$(cargo metadata --no-deps --format-version 1 \
             | jq -r '.packages[0].targets[] | select(.kind[] == "bin") | .name')
-
-          VERSION=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[0].version')
-
-          TARGET='${{ matrix.target }}'
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           BUILD_TYPE=release
+          TARGET=${{ matrix.target }}
 
-          BIN_PATH="target/$TARGET/$BUILD_TYPE/$BIN_NAME"*
+          if [[ "$TARGET" == *"windows"* ]]; then
+            EXT=".exe"
+          fi
 
-          OUTPUT_NAME="${BIN_NAME}-${VERSION}-${TARGET}-${BUILD_TYPE}"
-
+          OUTPUT_NAME="${BIN}-${VERSION}-${TARGET}-${BUILD_TYPE}${EXT}"
           mkdir -p dist
-          cp "$BIN_PATH" "dist/$OUTPUT_NAME"
+          cp target/$TARGET/$BUILD_TYPE/$BIN dist/$OUTPUT_NAME
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
