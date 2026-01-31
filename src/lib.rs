@@ -20,8 +20,9 @@ fn pitch_to_freq(midi: u8) -> f32 {
     440.0 * 2.0_f32.powf((midi as f32 - 69.0) / 12.0)
 }
 
-fn data_to_functions(data_changes: &Vec<(u32, u32)>, max_events_per_func: usize) -> Vec<String> {
+pub fn data_to_functions(mut data_changes: Vec<(u32, u32)>, max_events_per_func: usize) -> Vec<String> {
     let mut functions: Vec<String> = Vec::new();
+    data_changes.sort_by_key(|e| e.0);
 
     let mut i = 0;
     let mut prev_data = 0;
@@ -67,19 +68,7 @@ fn data_to_functions(data_changes: &Vec<(u32, u32)>, max_events_per_func: usize)
     functions
 }
 
-pub fn generate_music_player(
-    smf: Smf,
-    notes_per_value: usize,
-    min_pitch: u8,
-    max_pitch: u8,
-    min_velocity: u8,
-    repeat: bool,
-    max_events_per_func: usize
-) -> Result<Building> {
-    // Special positions for blocks.
-    const SWITCH_POSITION   : [f32; 3] = [ 0.0 , 0.015625 ,  0.25 ];
-    const TONE_GEN_POSITION : [f32; 3] = [ 0.0 , 0.0      , -0.25 ];
-
+pub fn midi_to_data_changes(smf: Smf, min_pitch: u8, max_pitch: u8, min_velocity: u8, notes_per_value: u8) -> Result<(u32, Vec<Vec<(u32, u32)>>, Vec<u8>, Vec<(u32, u32)>, u32)> {
     let ppq = match smf.header.timing {
         Timing::Metrical(t) => t.as_int() as u32,
         Timing::Timecode(_, _) => return Err(Error::UnsupportedTimingSMPTE)
@@ -89,7 +78,6 @@ pub fn generate_music_player(
     let mut note_events: Vec<(u32, u8, bool)> = Vec::new();
     let mut used_keys = [false; 128];
     let mut total_len = 0;
-
     let mut tempo_events: Vec<(u32, u32)> = Vec::new();
 
     tempo_events.push((0, 120));
@@ -138,7 +126,7 @@ pub fn generate_music_player(
     }
 
     let used_keys_count = key_mapping.len();
-    let channels_count = ((used_keys_count.checked_sub(1).unwrap_or(0)) / notes_per_value) + 1;
+    let channels_count = ((used_keys_count.checked_sub(1).unwrap_or(0)) / notes_per_value as usize) + 1;
 
     // Encoding note changes into bits of values.
     let mut note_counters = vec![0u8; used_keys_count];
@@ -174,7 +162,7 @@ pub fn generate_music_player(
             let prev_data = data_changes[c].last().unwrap_or(&(0, 0)).1;
             let mut data = 0;
             for bit in 0..notes_per_value {
-                let index = c * notes_per_value + bit;
+                let index = c * notes_per_value as usize + bit as usize;
                 if !(index < used_keys_count) || note_counters[index] < 1 { continue; }
                 data = data | 1 << bit;
             }
@@ -186,9 +174,26 @@ pub fn generate_music_player(
         i = j;
     }
 
+    Ok((ppq, data_changes, index_to_key, tempo_events, total_len))
+}
+
+pub fn build_music_player(
+    note_changes: Vec<Vec<(u32, u32)>>,
+    tempo_changes: Vec<(u32, u32)>,
+    pitches: Vec<u8>,
+    notes_per_value: u8,
+    max_events_per_func: usize,
+    total_len: u32,
+    ppq: u32,
+    repeat: bool
+) -> Result<Building> {
+    // Special positions for blocks.
+    const SWITCH_POSITION   : [f32; 3] = [ 0.0 , 0.015625 ,  0.25 ];
+    const TONE_GEN_POSITION : [f32; 3] = [ 0.0 , 0.0      , -0.25 ];
+
     // Decoder function
     let mut decoder_func = String::new();
-    for (p, ind) in (1..=notes_per_value).rev().enumerate() {
+    for (p, ind) in (1..=notes_per_value as usize).rev().enumerate() {
         write!(decoder_func, "ind({})=step(0.5,(A%1/2^{})*2^{})+step(1,A);", ind, p, p)?;
     }
     decoder_func.push('0');
@@ -245,7 +250,7 @@ pub fn generate_music_player(
     ];
 
     // Generating funcs and creating blocks
-    for c in 0..channels_count {
+    for (c, channel_changes) in note_changes.into_iter().enumerate() {
         blocks.push(Block {
             id: 129,
             metadata: Some(Metadata {
@@ -268,9 +273,11 @@ pub fn generate_music_player(
         let decoder_input_index: u16 = (blocks.len() - 1).try_into()?;
 
         for n in 0..notes_per_value {
-            let index = c * notes_per_value + n;
-            if !(index < used_keys_count) { continue; }
-            let pitch = index_to_key[index];
+            let index = c * notes_per_value as usize + n as usize;
+            let &pitch = match pitches.get(index) {
+                Some(p) => p,
+                None    => continue
+            };
             let freq = pitch_to_freq(pitch);
 
             blocks.push(Block {
@@ -289,7 +296,7 @@ pub fn generate_music_player(
             }
         }
 
-        let functions = data_to_functions(&data_changes[c], max_events_per_func);
+        let functions = data_to_functions(channel_changes, max_events_per_func);
 
         for f in functions {
             blocks.push(Block {
@@ -315,7 +322,7 @@ pub fn generate_music_player(
     }
 
     // Generating blocks with tempo data
-    let functions = data_to_functions(&tempo_events, max_events_per_func);
+    let functions = data_to_functions(tempo_changes, max_events_per_func);
     for f in functions {
         blocks.push(Block {
             id: 129,
@@ -340,6 +347,35 @@ pub fn generate_music_player(
 
     Ok(Building {
         roots: vec![Root::default()],
-       blocks
+        blocks
     })
+}
+
+pub fn generate_music_player(
+    smf: Smf,
+    notes_per_value: u8,
+    min_pitch: u8,
+    max_pitch: u8,
+    min_velocity: u8,
+    repeat: bool,
+    max_events_per_func: usize
+) -> Result<Building> {
+    let (ppq, note_changes, pitches, tempo_changes, total_len) = midi_to_data_changes(
+        smf,
+        min_pitch,
+        max_pitch,
+        min_velocity,
+        notes_per_value
+    )?;
+
+    Ok(build_music_player(
+        note_changes,
+        tempo_changes,
+        pitches,
+        notes_per_value,
+        max_events_per_func,
+        total_len,
+        ppq,
+        repeat
+    )?)
 }

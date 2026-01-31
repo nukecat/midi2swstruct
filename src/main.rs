@@ -53,8 +53,8 @@ struct Args {
     repeat: bool,
 
     /// How many note changes can be encoded in one value.
-    #[arg(short, long, default_value = "24", value_parser = clap::value_parser!(u32).range(1..=24))]
-    notes_per_value: u32
+    #[arg(short, long, default_value = "24", value_parser = clap::value_parser!(u8).range(1..=24))]
+    notes_per_value: u8
 }
 
 fn main() -> Result<()> {
@@ -78,7 +78,7 @@ fn main() -> Result<()> {
     // Generate building
     let building = generate_music_player(
         smf,
-        args.notes_per_value as usize,
+        args.notes_per_value,
         args.min_pitch,
         args.max_pitch,
         args.min_velocity,
