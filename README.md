@@ -3,7 +3,7 @@
 `midi2swstruct` is a Rust CLI tool that **converts MIDI files into Sandbox World structure files**. The generated structure includes a music player with encoded MIDI data, playable within Sandbox World.
 
 ## Archived
-This project is no longer maintained because im lazy and i don't have intrest to invest time in this.
+This project is no longer maintained because i'm lazy and i don't have intrest to invest time in this.
 
 ---
 
